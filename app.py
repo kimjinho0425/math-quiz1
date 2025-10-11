@@ -1,9 +1,8 @@
-# app.py — Streamlit Math Quiz (김홍조님 고정판 v2.8.1)
-# - [검색] 키워드 공백 분할 AND 매칭 (수1 삼각함수 → 두 단어 모두 포함)
-# - [이름] 기기(세션) 간 고정: URL 쿼리파라미터 ?user=이름 로 잠금 지속
-# - [이름] 이미 기록된 이름은 다른 기기에서 재사용 불가 (진행/랭킹 파일 기준)
-# - 기존 기능은 그대로 유지 (이미지 표시/랭킹 등)
-# - ⚠️ deprecated API 제거: experimental_* → st.query_params 로 교체
+# app.py — Streamlit Math Quiz (계정 로그인 & 자동 로그인)
+# - 첫 화면에 회원가입 + 로그인 동시 표시
+# - 계정: 이름(고유) + 비밀번호(salt+SHA256 해시) → 서버측 파일(data/accounts.csv)에 영구 저장
+# - 어디서 접속해도(새로고침/창닫음/다른 기기) 비밀번호가 맞으면 로그인 가능
+# - 로그인 유지 체크 시: 영속 쿠키로 자동 로그인 (약 20년)
 
 import time, hashlib, re, os, urllib.parse
 from pathlib import Path
@@ -13,6 +12,195 @@ import streamlit as st
 
 st.set_page_config(page_title="수학 퀴즈", page_icon="🧮", layout="centered")
 
+# ===== 계정 & 로그인 유지 =====
+SECRET_SALT = "KEEP_THIS_CONSTANT_AND_PRIVATE"  # 원하면 다른 임의 문자열로 교체
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+ACCOUNTS_FILE = DATA_DIR / "accounts.csv"  # name, pwd_hash, salt, created_at
+
+def _ensure_accounts_csv():
+    if not ACCOUNTS_FILE.exists():
+        pd.DataFrame(columns=["name","pwd_hash","salt","created_at"]).to_csv(
+            ACCOUNTS_FILE, index=False, encoding="utf-8-sig"
+        )
+
+def _hash_pw(password: str, salt: str) -> str:
+    return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+
+def _make_sig(name: str, pwd_hash: str) -> str:
+    base = f"{name}|{pwd_hash}|{SECRET_SALT}"
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
+
+# --- 쿠키 호환 레이어 (버전별 대응) ---
+def _has_exp_cookies() -> bool:
+    return all(
+        hasattr(st, attr) for attr in [
+            "experimental_set_cookie", "experimental_get_cookie", "experimental_delete_cookie"
+        ]
+    )
+
+def _cget(k: str, default: str = "") -> str:
+    if _has_exp_cookies():
+        v = st.experimental_get_cookie(k)
+        return v if v is not None else default
+    if hasattr(st, "cookies") and k in st.cookies:
+        return st.cookies.get(k, default)
+    return default
+
+def _cset(k: str, v: str):
+    if _has_exp_cookies():
+        st.experimental_set_cookie(
+            k, v, max_age=60*60*24*365*20, secure=True, samesite="Lax"  # 약 20년
+        )
+        return
+    if hasattr(st, "cookies"):
+        st.cookies[k] = v
+
+def _cdel(k: str):
+    if _has_exp_cookies():
+        st.experimental_delete_cookie(k, samesite="Lax")
+        return
+    if hasattr(st, "cookies"):
+        try:
+            del st.cookies[k]
+        except Exception:
+            st.cookies[k] = ""
+
+def _persist_login(name: str, pwd_hash: str):
+    _cset("acc_name", name)
+    _cset("acc_sig", _make_sig(name, pwd_hash))
+
+def _clear_login():
+    _cdel("acc_name"); _cdel("acc_sig")
+
+def _load_account_row(name: str):
+    try:
+        df = pd.read_csv(ACCOUNTS_FILE)
+        df["name"] = df["name"].astype(str).str.strip()
+        row = df[df["name"] == name.strip()]
+        if row.empty:
+            return None
+        r = row.iloc[0]
+        return {"name": r["name"], "pwd_hash": str(r["pwd_hash"]), "salt": str(r["salt"])}
+    except Exception:
+        return None
+
+def _account_exists(name: str) -> bool:
+    try:
+        df = pd.read_csv(ACCOUNTS_FILE)
+        return name.strip() in df["name"].astype(str).str.strip().values
+    except Exception:
+        return False
+
+def _create_account(name: str, password: str) -> bool:
+    if not name or not password:
+        return False
+    if _account_exists(name):
+        return False
+    salt = os.urandom(8).hex()
+    pwd_hash = _hash_pw(password, salt)
+    row = {
+        "name": name.strip(),
+        "pwd_hash": pwd_hash,
+        "salt": salt,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    # header는 파일이 없거나 비어있을 때만 씀
+    header_needed = (not ACCOUNTS_FILE.exists()) or pd.read_csv(ACCOUNTS_FILE).empty
+    pd.DataFrame([row]).to_csv(ACCOUNTS_FILE, mode="a",
+                               header=header_needed, index=False, encoding="utf-8-sig")
+    return True
+
+def _verify_login(name: str, password: str) -> bool:
+    acc = _load_account_row(name)
+    if not acc:
+        return False
+    return _hash_pw(password, acc["salt"]) == acc["pwd_hash"]
+
+def _auto_login_from_cookie() -> bool:
+    name = _cget("acc_name")
+    sig = _cget("acc_sig")
+    if not name or not sig:
+        return False
+    acc = _load_account_row(name)
+    if not acc:
+        return False
+    if sig == _make_sig(name, acc["pwd_hash"]):
+        st.session_state.auth = {"name": name, "remember": True}
+        st.session_state.locked_name = name
+        return True
+    return False
+
+def auth_gate():
+    """첫 화면: 회원가입 + 로그인 폼 동시 표시. 로그인 성공 시 통과."""
+    _ensure_accounts_csv()
+    ss = st.session_state
+
+    # 이미 세션 로그인
+    if ss.get("auth") and ss.auth.get("name"):
+        return True
+    # 쿠키 자동 로그인
+    if _auto_login_from_cookie():
+        return True
+
+    st.markdown("## 🔐 로그인 / 회원가입")
+
+    c1, c2 = st.columns(2)
+    # --- 회원가입 ---
+    with c1:
+        st.markdown("#### 회원가입")
+        with st.form("signup_form", clear_on_submit=False):
+            su_name = st.text_input("이름(중복 불가)", key="su_name")
+            su_pw = st.text_input("비밀번호", type="password", key="su_pw")
+            su_submit = st.form_submit_button("회원가입")
+        if su_submit:
+            name = (su_name or "").strip()
+            pw = (su_pw or "").strip()
+            if not name:
+                st.error("이름을 입력하세요.")
+                st.stop()
+            if not pw:
+                st.error("비밀번호를 입력하세요.")
+                st.stop()
+            if _account_exists(name):
+                st.error(f"'{name}' 은(는) 이미 가입된 이름입니다.")
+                st.stop()
+            ok = _create_account(name, pw)
+            if ok:
+                st.success("회원가입 완료! 오른쪽 폼에서 로그인하세요.")
+
+    # --- 로그인 ---
+    with c2:
+        st.markdown("#### 로그인")
+        with st.form("login_form", clear_on_submit=False):
+            li_name = st.text_input("이름", key="li_name")
+            li_pw = st.text_input("비밀번호", type="password", key="li_pw")
+            remember = st.checkbox("로그인 유지(이 브라우저에서 자동 로그인)", value=True, key="login_remember")
+            li_submit = st.form_submit_button("로그인")
+        if li_submit:
+            name = (li_name or "").strip()
+            pw = (li_pw or "").strip()
+            if not name or not pw:
+                st.error("이름과 비밀번호를 모두 입력하세요.")
+                st.stop()
+            if not _account_exists(name) or not _verify_login(name, pw):
+                st.error("이름 또는 비밀번호가 올바르지 않습니다.")
+                st.stop()
+            # 세션 세팅
+            ss.auth = {"name": name, "remember": remember}
+            ss.locked_name = name
+            # 자동 로그인 유지(영속 쿠키)
+            if remember:
+                acc = _load_account_row(name)
+                _persist_login(name, acc["pwd_hash"])
+            else:
+                _clear_login()
+            st.rerun()
+
+    # 로그인 전 차단
+    st.stop()
+
 # ===== 고정 설정 =====
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQv-m184X3IvYWV0Ntur0gEQhs2DO9ryWJGYiLV30TFV_jB0iSatddQoPAfNFAUybXjoyEHEg4ld5ZY/pub?output=csv"
 ADMIN_PASSWORD = "081224"
@@ -20,8 +208,6 @@ LEVELS = ["전체", "하", "중", "상", "최상"]
 LEVEL_SCORE = {"하": 1, "중": 3, "상": 5, "최상": 7}
 
 # ===== 데이터 경로(안정화) =====
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
 RANKING_FILE = DATA_DIR / "quiz_ranking.csv"
 PROGRESS_FILE = DATA_DIR / "quiz_progress.csv"
 
@@ -31,17 +217,16 @@ def ensure_csv(path: Path, cols):
 
 ensure_csv(RANKING_FILE, ["timestamp","user_name","total","correct","wrong","blank","rate","score"])
 ensure_csv(PROGRESS_FILE, ["timestamp","user_name","qid","status","level"])
+_ensure_accounts_csv()
 
 # ===== 시트 로드 =====
 @st.cache_data(show_spinner=False)
 def load_sheet(_cache_buster: int = 0) -> pd.DataFrame:
     df = pd.read_csv(SHEET_CSV_URL)
     df.columns = [c.strip().lower() for c in df.columns]
-    # image 열까지 표준화 (NaN -> "" -> str)
     for c in ["level","topic","question","answer","image"]:
         if c not in df.columns: df[c] = ""
         df[c] = df[c].fillna("").astype(str).str.strip()
-    # 문제 고유 id 생성/보정
     if "id" not in df.columns:
         df["id"] = df.apply(lambda r: hashlib.md5(
             f"{r['level']}|{r['topic']}|{r['question']}|{r['answer']}".encode("utf-8")
@@ -63,14 +248,12 @@ def normalize_ans(s: str) -> str:
     return s2
 
 def filter_df(df: pd.DataFrame, level: str, keyword: str) -> pd.DataFrame:
-    """난이도 필터 + 키워드 공백 분할 AND 매칭"""
     cond = pd.Series(True, index=df.index)
     if level in ("하","중","상","최상"):
         cond &= (df["level"] == level)
     kw = (keyword or "").strip().lower()
     if kw:
         hay = (df["topic"].fillna("") + " " + df["question"].fillna("") + " " + df["answer"].fillna("")).str.lower()
-        # 공백 기준으로 나눈 모든 토큰이 포함되어야 통과 (AND 검색)
         for token in kw.split():
             cond &= hay.str.contains(re.escape(token), na=False)
     return df[cond].copy()
@@ -80,7 +263,6 @@ def calc_weighted_score(df_log: pd.DataFrame) -> int:
     return int(df_log[df_log["status"]=="correct"]["level"].map(LEVEL_SCORE).fillna(0).sum())
 
 def _resolve_image_items(raw: str):
-    """image 셀(세미콜론/줄바꿈/쉼표 구분) → 유효 URL 리스트 (nan/none/- 제거)"""
     if not raw: return []
     parts = re.split(r"[;\n,]+", str(raw).strip())
     cleaned = []
@@ -93,9 +275,8 @@ def _resolve_image_items(raw: str):
             cleaned.append(u)
     return cleaned
 
-# ===== 이름 잠금 관련 =====
+# (이전 호환용 도우미 — 사용 안 해도 무방)
 def load_used_names() -> set[str]:
-    """이미 기록(랭킹/진행)에 등장한 모든 이름 집합"""
     used = set()
     try:
         r = pd.read_csv(RANKING_FILE)
@@ -109,13 +290,12 @@ def load_used_names() -> set[str]:
             used |= set(p["user_name"].astype(str).str.strip())
     except Exception:
         pass
-    used.discard("")  # 빈 문자열 제거
+    used.discard("")
     return used
 
 def get_query_user() -> str:
-    """URL 쿼리의 user 값을 읽어 잠금 복원 (st.query_params 사용)"""
     try:
-        params = st.query_params  # dict-like
+        params = st.query_params
         val = params.get("user", "")
         if isinstance(val, list):
             return str(val[0]).strip() if val else ""
@@ -124,13 +304,12 @@ def get_query_user() -> str:
         return ""
 
 def set_query_user(name: str):
-    """URL 쿼리에 user=이름 저장 (새로고침/재접속 지속) — st.query_params 사용"""
     try:
         st.query_params["user"] = name
     except Exception:
         pass
 
-# ===== 진행파일/랭킹파일 로직 =====
+# ===== 진행/랭킹 파일 =====
 def append_progress(user: str, qid: str, status: str, level: str):
     row = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -206,34 +385,19 @@ ss.setdefault("admin_open", False)
 ss.setdefault("admin_ok", False)
 ss.setdefault("admin_del_target", "")
 
-# URL 쿼리에서 기존 잠금 복원
+# (이전 URL 잠금 복원 — 계정 로그인과 무관, 있어도 무해)
 if not ss.locked_name:
     q_user = get_query_user()
     if q_user:
         ss.locked_name = q_user
-        ss.user_name = q_user  # 입력창에도 반영
+        ss.user_name = q_user
 
 def enforce_locked_name():
-    """잠긴 이름이 있으면 다른 이름 입력을 막고 안내"""
     if ss.locked_name:
         cur = (ss.user_name or "").strip()
         if cur and cur != ss.locked_name:
             st.error(f"이 기기에서는 '{ss.locked_name}' 이름으로만 진행할 수 있습니다.")
             ss.user_name = ss.locked_name
-
-def lock_name_now():
-    """이름 잠그기: 사용가능 여부 확인 후 세션+URL에 저장"""
-    name = (ss.user_name or "").strip()
-    if not name:
-        return
-    used = load_used_names()
-    # 이미 기록된 이름인데 지금 기기에 잠겨 있지 않다면 금지
-    if name in used and ss.locked_name != name:
-        st.error(f"'{name}' 이름은 이미 사용 중입니다. 다른 이름을 입력하세요.")
-        return
-    # 정상 잠금
-    ss.locked_name = name
-    set_query_user(name)  # URL 쿼리에 저장 → 새로고침/재접속 지속
 
 def go_home():
     ss.stage = "home"
@@ -241,15 +405,21 @@ def go_home():
     ss.result_saved = False
 
 # ===== UI: 공통 헤더 =====
+auth_gate()
+
 st.title("수학 퀴즈")
 st.caption("고정된 구글 시트에서 문제를 불러와 난이도/키워드 조건으로 랜덤 출제합니다. (푼 문제는 다시 안 나옴)")
 
-# ===== 이름 입력(잠금 유지) =====
+# 현재 로그인 사용자 표기 + 로그아웃
 enforce_locked_name()
-st.text_input("이름을 입력하세요 (예: 홍길동)", key="user_name", disabled=bool(ss.locked_name))
-# 입력이 바뀌었을 수 있으니 잠금 시도
-if not ss.locked_name and ss.user_name:
-    lock_name_now()
+with st.sidebar:
+    st.markdown(f"**👤 {ss.locked_name}**")
+    if st.button("로그아웃", use_container_width=True, key="btn_logout"):
+        _clear_login()
+        ss.pop("auth", None)
+        ss.pop("locked_name", None)
+        ss.user_name = ""
+        st.rerun()
 
 st.divider()
 
@@ -268,7 +438,7 @@ if ss.stage == "home":
 
         if st.button("문제 풀기", type="primary", use_container_width=True):
             if not ss.locked_name:
-                st.error("이름을 먼저 입력하세요. (이미 사용된 이름은 사용할 수 없습니다)")
+                st.error("로그인이 필요합니다.")
             else:
                 ss.filters = {"level": level, "keyword": keyword}
                 df_filtered = filter_df(ss.df, level, keyword)
@@ -280,7 +450,6 @@ if ss.stage == "home":
                     ss.stage = "quiz"
                     st.rerun()
 
-        # 랭킹 표
         st.markdown("### 🏆 랭킹 (맞춘 문제 수 기준)")
         rank_df = load_ranking_sorted()
         if not rank_df.empty:
@@ -302,13 +471,11 @@ elif ss.stage == "quiz":
     st.markdown(f"**[{row.get('topic','')}] {row.get('level','')} 난이도**")
     st.markdown("> 문제:\n" + str(row.get("question","")))
 
-    # 이미지 표시
     raw_img = str(row.get("image","")).strip()
     urls = _resolve_image_items(raw_img)
     if urls:
         st.image(urls, use_container_width=True)
 
-    # 문제별 고유 key
     ans_key = f"quiz_answer_{row['id']}"
     st.text_input("정답 입력", key=ans_key)
 
@@ -462,7 +629,6 @@ def _admin_panel_menu():
     st.markdown('<div class="admin-title">🛠 관리자 패널</div>', unsafe_allow_html=True)
     st.markdown('<div class="admin-help">랭킹 삭제 / 시트 최신 반영 / 캐시 초기화</div>', unsafe_allow_html=True)
 
-    # 랭킹/진행 기록에서 이름 삭제 (재사용 가능해짐)
     st.text_input("삭제할 사용자 이름", key="admin_del_target", placeholder="예: 홍길동")
     c1, c2 = st.columns(2)
     with c1:
@@ -483,7 +649,7 @@ def _admin_panel_menu():
                     dfp.to_csv(PROGRESS_FILE, index=False, encoding="utf-8-sig")
                 except Exception:
                     pass
-                st.success(f"'{target}'의 랭킹 및 푼 문제 기록을 삭제했습니다. 이제 해당 이름을 다른 기기에서도 사용할 수 있습니다.")
+                st.success(f"'{target}'의 랭킹 및 푼 문제 기록을 삭제했습니다.")
             else:
                 st.error("사용자 이름을 입력하세요.")
     with c2:
@@ -504,9 +670,9 @@ def _admin_panel_menu():
     cc1, cc2, cc3 = st.columns(3)
     with cc1:
         if st.button("닫기", key="admin_close"): ss.admin_open=False; st.rerun()
-    with cc2:
+    with c2:
         if st.button("잠그기", key="admin_lock"): ss.admin_ok=False; st.rerun()
-    with cc3:
+    with c3:
         if st.button("캐시 전체 초기화", key="admin_clear_cache"):
             try:
                 st.cache_data.clear(); st.success("캐시 초기화 완료.")
