@@ -1,4 +1,11 @@
-import time, hashlib, re, os
+# app.py — Streamlit Math Quiz (김홍조님 고정판 v2.8.1)
+# - [검색] 키워드 공백 분할 AND 매칭 (수1 삼각함수 → 두 단어 모두 포함)
+# - [이름] 기기(세션) 간 고정: URL 쿼리파라미터 ?user=이름 로 잠금 지속
+# - [이름] 이미 기록된 이름은 다른 기기에서 재사용 불가 (진행/랭킹 파일 기준)
+# - 기존 기능은 그대로 유지 (이미지 표시/랭킹 등)
+# - ⚠️ deprecated API 제거: experimental_* → st.query_params 로 교체
+
+import time, hashlib, re, os, urllib.parse
 from pathlib import Path
 from typing import Dict, Any
 import pandas as pd
@@ -30,10 +37,9 @@ ensure_csv(PROGRESS_FILE, ["timestamp","user_name","qid","status","level"])
 def load_sheet(_cache_buster: int = 0) -> pd.DataFrame:
     df = pd.read_csv(SHEET_CSV_URL)
     df.columns = [c.strip().lower() for c in df.columns]
-    # image 열까지 표준화 (⚠ NaN → "" → str 순서)
+    # image 열까지 표준화 (NaN -> "" -> str)
     for c in ["level","topic","question","answer","image"]:
-        if c not in df.columns:
-            df[c] = ""
+        if c not in df.columns: df[c] = ""
         df[c] = df[c].fillna("").astype(str).str.strip()
     # 문제 고유 id 생성/보정
     if "id" not in df.columns:
@@ -57,13 +63,16 @@ def normalize_ans(s: str) -> str:
     return s2
 
 def filter_df(df: pd.DataFrame, level: str, keyword: str) -> pd.DataFrame:
+    """난이도 필터 + 키워드 공백 분할 AND 매칭"""
     cond = pd.Series(True, index=df.index)
     if level in ("하","중","상","최상"):
         cond &= (df["level"] == level)
     kw = (keyword or "").strip().lower()
     if kw:
         hay = (df["topic"].fillna("") + " " + df["question"].fillna("") + " " + df["answer"].fillna("")).str.lower()
-        cond &= hay.str.contains(re.escape(kw), na=False)
+        # 공백 기준으로 나눈 모든 토큰이 포함되어야 통과 (AND 검색)
+        for token in kw.split():
+            cond &= hay.str.contains(re.escape(token), na=False)
     return df[cond].copy()
 
 def calc_weighted_score(df_log: pd.DataFrame) -> int:
@@ -72,20 +81,54 @@ def calc_weighted_score(df_log: pd.DataFrame) -> int:
 
 def _resolve_image_items(raw: str):
     """image 셀(세미콜론/줄바꿈/쉼표 구분) → 유효 URL 리스트 (nan/none/- 제거)"""
-    if not raw:
-        return []
+    if not raw: return []
     parts = re.split(r"[;\n,]+", str(raw).strip())
     cleaned = []
     for p in parts:
         u = p.strip()
-        if not u:
-            continue
+        if not u: continue
         lu = u.lower()
-        if lu in {"nan", "none", "-"}:
-            continue
+        if lu in {"nan","none","-"}: continue
         if lu.startswith("http://") or lu.startswith("https://"):
             cleaned.append(u)
     return cleaned
+
+# ===== 이름 잠금 관련 =====
+def load_used_names() -> set[str]:
+    """이미 기록(랭킹/진행)에 등장한 모든 이름 집합"""
+    used = set()
+    try:
+        r = pd.read_csv(RANKING_FILE)
+        if "user_name" in r.columns:
+            used |= set(r["user_name"].astype(str).str.strip())
+    except Exception:
+        pass
+    try:
+        p = pd.read_csv(PROGRESS_FILE)
+        if "user_name" in p.columns:
+            used |= set(p["user_name"].astype(str).str.strip())
+    except Exception:
+        pass
+    used.discard("")  # 빈 문자열 제거
+    return used
+
+def get_query_user() -> str:
+    """URL 쿼리의 user 값을 읽어 잠금 복원 (st.query_params 사용)"""
+    try:
+        params = st.query_params  # dict-like
+        val = params.get("user", "")
+        if isinstance(val, list):
+            return str(val[0]).strip() if val else ""
+        return str(val).strip()
+    except Exception:
+        return ""
+
+def set_query_user(name: str):
+    """URL 쿼리에 user=이름 저장 (새로고침/재접속 지속) — st.query_params 사용"""
+    try:
+        st.query_params["user"] = name
+    except Exception:
+        pass
 
 # ===== 진행파일/랭킹파일 로직 =====
 def append_progress(user: str, qid: str, status: str, level: str):
@@ -112,7 +155,6 @@ def recompute_from_progress(user: str, problems_df: pd.DataFrame | None) -> Dict
     for c in ["status","level"]:
         if c not in mine.columns: mine[c] = ""
         mine[c] = mine[c].astype(str)
-    # 부족한 level 보완
     if problems_df is not None and "id" in problems_df.columns:
         id2lvl = dict(zip(problems_df["id"].astype(str), problems_df["level"].astype(str)))
         miss = mine["level"].str.strip().eq("") | mine["level"].isna()
@@ -164,7 +206,15 @@ ss.setdefault("admin_open", False)
 ss.setdefault("admin_ok", False)
 ss.setdefault("admin_del_target", "")
 
+# URL 쿼리에서 기존 잠금 복원
+if not ss.locked_name:
+    q_user = get_query_user()
+    if q_user:
+        ss.locked_name = q_user
+        ss.user_name = q_user  # 입력창에도 반영
+
 def enforce_locked_name():
+    """잠긴 이름이 있으면 다른 이름 입력을 막고 안내"""
     if ss.locked_name:
         cur = (ss.user_name or "").strip()
         if cur and cur != ss.locked_name:
@@ -172,8 +222,18 @@ def enforce_locked_name():
             ss.user_name = ss.locked_name
 
 def lock_name_now():
-    if ss.user_name and not ss.locked_name:
-        ss.locked_name = ss.user_name.strip()
+    """이름 잠그기: 사용가능 여부 확인 후 세션+URL에 저장"""
+    name = (ss.user_name or "").strip()
+    if not name:
+        return
+    used = load_used_names()
+    # 이미 기록된 이름인데 지금 기기에 잠겨 있지 않다면 금지
+    if name in used and ss.locked_name != name:
+        st.error(f"'{name}' 이름은 이미 사용 중입니다. 다른 이름을 입력하세요.")
+        return
+    # 정상 잠금
+    ss.locked_name = name
+    set_query_user(name)  # URL 쿼리에 저장 → 새로고침/재접속 지속
 
 def go_home():
     ss.stage = "home"
@@ -187,7 +247,9 @@ st.caption("고정된 구글 시트에서 문제를 불러와 난이도/키워�
 # ===== 이름 입력(잠금 유지) =====
 enforce_locked_name()
 st.text_input("이름을 입력하세요 (예: 홍길동)", key="user_name", disabled=bool(ss.locked_name))
-lock_name_now()
+# 입력이 바뀌었을 수 있으니 잠금 시도
+if not ss.locked_name and ss.user_name:
+    lock_name_now()
 
 st.divider()
 
@@ -202,11 +264,11 @@ if ss.stage == "home":
         with c1:
             level = st.selectbox("난이도", LEVELS, index=LEVELS.index(ss.filters.get("level","전체")))
         with c2:
-            keyword = st.text_input("키워드 검색 (예: 미분)", value=ss.filters.get("keyword",""))
+            keyword = st.text_input("키워드 검색 (공백으로 여러 단어 AND 검색, 예: 수1 삼각함수)", value=ss.filters.get("keyword",""))
 
         if st.button("문제 풀기", type="primary", use_container_width=True):
             if not ss.locked_name:
-                st.error("이름을 먼저 입력하세요.")
+                st.error("이름을 먼저 입력하세요. (이미 사용된 이름은 사용할 수 없습니다)")
             else:
                 ss.filters = {"level": level, "keyword": keyword}
                 df_filtered = filter_df(ss.df, level, keyword)
@@ -232,7 +294,7 @@ if ss.stage == "home":
             st.info("등록된 랭킹 기록이 없습니다. 결과 화면에서 랭킹에 저장해 보세요.")
 
 # ==========================
-# QUIZ (기존 UI 유지)
+# QUIZ
 # ==========================
 elif ss.stage == "quiz":
     enforce_locked_name()
@@ -240,13 +302,13 @@ elif ss.stage == "quiz":
     st.markdown(f"**[{row.get('topic','')}] {row.get('level','')} 난이도**")
     st.markdown("> 문제:\n" + str(row.get("question","")))
 
-    # ✅ image 열(URL/여러 장) 자동 표시 (유효 URL만)
+    # 이미지 표시
     raw_img = str(row.get("image","")).strip()
     urls = _resolve_image_items(raw_img)
     if urls:
         st.image(urls, use_container_width=True)
 
-    # ★ 문제별 고유 key
+    # 문제별 고유 key
     ans_key = f"quiz_answer_{row['id']}"
     st.text_input("정답 입력", key=ans_key)
 
@@ -258,10 +320,8 @@ elif ss.stage == "quiz":
         gt = normalize_ans(row.get("answer",""))
         status = "correct" if (ua and ua == gt) else ("blank" if ua == "" else "wrong")
 
-        # 영구 진행 로그 저장(csv)
         append_progress(ss.locked_name, str(row["id"]), status, str(row["level"]))
 
-        # 세션 로그에도 기록 (topic 포함)
         ss.logs.append({
             "qid": str(row["id"]),
             "status": status,
@@ -275,7 +335,6 @@ elif ss.stage == "quiz":
             st.rerun()
             return
 
-        # 다음 문제 선택
         df_filtered = filter_df(ss.df, ss.filters.get("level","전체"), ss.filters.get("keyword",""))
         unseen = df_filtered[~df_filtered["id"].isin(ss.seen_ids)]
         if unseen.empty:
@@ -296,7 +355,7 @@ elif ss.stage == "quiz":
             st.rerun()
 
 # ==========================
-# RESULT (기존 UI 유지)
+# RESULT
 # ==========================
 elif ss.stage == "result":
     enforce_locked_name()
@@ -319,7 +378,6 @@ elif ss.stage == "result":
 
         show_keys = st.checkbox("정답 값도 함께 보기", value=False)
 
-        # ✅ topic/qid 존재 여부 안전 처리
         base_cols = ["level", "status"]
         if "topic" in df_log.columns:
             base_cols.insert(1, "topic")
@@ -357,7 +415,7 @@ elif ss.stage == "result":
             go_home(); st.rerun()
 
 # ==========================
-#   우하단 '관리자' FAB (기존 느낌 유지)
+#   우하단 '관리자' FAB
 # ==========================
 st.markdown("""
 <style>
@@ -404,14 +462,13 @@ def _admin_panel_menu():
     st.markdown('<div class="admin-title">🛠 관리자 패널</div>', unsafe_allow_html=True)
     st.markdown('<div class="admin-help">랭킹 삭제 / 시트 최신 반영 / 캐시 초기화</div>', unsafe_allow_html=True)
 
-    # 랭킹 삭제
+    # 랭킹/진행 기록에서 이름 삭제 (재사용 가능해짐)
     st.text_input("삭제할 사용자 이름", key="admin_del_target", placeholder="예: 홍길동")
     c1, c2 = st.columns(2)
     with c1:
         if st.button("기록 삭제", key="admin_del_exec"):
             target = (ss.get("admin_del_target") or "").strip()
             if target:
-                # 랭킹에서 제거
                 try:
                     df = pd.read_csv(RANKING_FILE)
                     df["user_name"] = df["user_name"].astype(str).str.strip()
@@ -419,7 +476,6 @@ def _admin_panel_menu():
                     df.to_csv(RANKING_FILE, index=False, encoding="utf-8-sig")
                 except Exception:
                     pass
-                # 진행기록도 제거
                 try:
                     dfp = pd.read_csv(PROGRESS_FILE)
                     dfp["user_name"] = dfp["user_name"].astype(str).str.strip()
@@ -427,7 +483,7 @@ def _admin_panel_menu():
                     dfp.to_csv(PROGRESS_FILE, index=False, encoding="utf-8-sig")
                 except Exception:
                     pass
-                st.success(f"'{target}'의 랭킹 및 푼 문제 기록을 삭제했습니다.")
+                st.success(f"'{target}'의 랭킹 및 푼 문제 기록을 삭제했습니다. 이제 해당 이름을 다른 기기에서도 사용할 수 있습니다.")
             else:
                 st.error("사용자 이름을 입력하세요.")
     with c2:
@@ -436,7 +492,6 @@ def _admin_panel_menu():
 
     st.markdown("---")
 
-    # 시트 최신 반영 (전역 캐시 초기화)
     if st.button("시트 최신 반영(새로고침)", key="admin_sheet_reload"):
         try:
             st.cache_data.clear()
@@ -463,4 +518,3 @@ def _admin_panel_menu():
 if ss.admin_open:
     if ss.admin_ok: _admin_panel_menu()
     else: _admin_panel_password()
-
