@@ -1,8 +1,9 @@
-# app.py — Streamlit Math Quiz (계정 로그인 & 자동 로그인)
+# app.py — Streamlit Math Quiz (계정 로그인 & 자동 로그인 + 재출제 방지 복원)
 # - 첫 화면에 회원가입 + 로그인 동시 표시
 # - 계정: 이름(고유) + 비밀번호(salt+SHA256 해시) → 서버측 파일(data/accounts.csv)에 영구 저장
-# - 어디서 접속해도(새로고침/창닫음/다른 기기) 비밀번호가 맞으면 로그인 가능
+# - 어디서 접속해도(새로고침/창닫음/다른 기기) 비밀번호가 맞으면 로그인
 # - 로그인 유지 체크 시: 영속 쿠키로 자동 로그인 (약 20년)
+# - 새로고침해도 이미 푼 문제는 진행 기록에서 복원하여 재출제 방지
 
 import time, hashlib, re, os, urllib.parse
 from pathlib import Path
@@ -106,7 +107,6 @@ def _create_account(name: str, password: str) -> bool:
         "salt": salt,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    # header는 파일이 없거나 비어있을 때만 씀
     header_needed = (not ACCOUNTS_FILE.exists()) or pd.read_csv(ACCOUNTS_FILE).empty
     pd.DataFrame([row]).to_csv(ACCOUNTS_FILE, mode="a",
                                header=header_needed, index=False, encoding="utf-8-sig")
@@ -222,17 +222,17 @@ _ensure_accounts_csv()
 # ===== 시트 로드 =====
 @st.cache_data(show_spinner=False)
 def load_sheet(_cache_buster: int = 0) -> pd.DataFrame:
-    df = pd.read_csv(SHEET_CSV_URL)
+    df = pd.read_csv(SHEET_CSV_URL, keep_default_na=False)  # NA를 '빈문자'로
     df.columns = [c.strip().lower() for c in df.columns]
     for c in ["level","topic","question","answer","image"]:
         if c not in df.columns: df[c] = ""
-        df[c] = df[c].fillna("").astype(str).str.strip()
+        df[c] = df[c].astype(str).str.strip()
     if "id" not in df.columns:
         df["id"] = df.apply(lambda r: hashlib.md5(
             f"{r['level']}|{r['topic']}|{r['question']}|{r['answer']}".encode("utf-8")
         ).hexdigest()[:12], axis=1)
     else:
-        df["id"] = df["id"].fillna("").astype(str).str.strip()
+        df["id"] = df["id"].astype(str).str.strip()
         miss = df["id"] == ""
         if miss.any():
             df.loc[miss, "id"] = df[miss].apply(lambda r: hashlib.md5(
@@ -255,24 +255,49 @@ def filter_df(df: pd.DataFrame, level: str, keyword: str) -> pd.DataFrame:
     if kw:
         hay = (df["topic"].fillna("") + " " + df["question"].fillna("") + " " + df["answer"].fillna("")).str.lower()
         for token in kw.split():
-            cond &= hay.str.contains(re.escape(token), na=False)
+            cond &= hay.str_contains(re.escape(token), na=False) if hasattr(hay, "str_contains") else hay.str.contains(re.escape(token), na=False)
     return df[cond].copy()
 
 def calc_weighted_score(df_log: pd.DataFrame) -> int:
     if df_log.empty: return 0
     return int(df_log[df_log["status"]=="correct"]["level"].map(LEVEL_SCORE).fillna(0).sum())
 
+# ===== [교체] 이미지 URL 정제기 (URL 정규식 기반 + Drive 변환) =====
 def _resolve_image_items(raw: str):
-    if not raw: return []
-    parts = re.split(r"[;\n,]+", str(raw).strip())
+    """
+    시트 'image' 셀 값 → 표시 가능한 이미지 URL 리스트로 정제
+    - URL 정규식으로 http/https 링크 '전부 추출'
+    - Google Drive 'view/open' → 'uc?export=view&id=' 자동 변환
+    - 숫자·잡값·빈값은 자동 무시
+    - 세미콜론/쉼표/줄바꿈/공백 섞여도 안전
+    """
+    if not raw:
+        return []
+    s = str(raw).strip()
+
+    # =IMAGE("...") → 안의 URL만 뽑기
+    m = re.match(r'\s*=IMAGE\(\s*["\']([^"\']+)["\']', s, flags=re.I)
+    if m:
+        s = m.group(1).strip()
+
+    # URL 전부 추출
+    urls = re.findall(r'https?://[^\s\]\)\'"]+', s)
+
+    def _drive_to_uc(u: str) -> str:
+        m1 = re.search(r"drive\.google\.com/file/d/([^/]+)/", u)
+        if m1:
+            return f"https://drive.google.com/uc?export=view&id={m1.group(1)}"
+        m2 = re.search(r"drive\.google\.com/.*[?&]id=([^&]+)", u)
+        if m2:
+            return f"https://drive.google.com/uc?export=view&id={m2.group(1)}"
+        return u
+
     cleaned = []
-    for p in parts:
-        u = p.strip()
-        if not u: continue
+    for u in urls:
         lu = u.lower()
-        if lu in {"nan","none","-"}: continue
-        if lu.startswith("http://") or lu.startswith("https://"):
-            cleaned.append(u)
+        if "drive.google.com" in lu:
+            u = _drive_to_uc(u)
+        cleaned.append(u)
     return cleaned
 
 # (이전 호환용 도우미 — 사용 안 해도 무방)
@@ -384,6 +409,7 @@ ss.setdefault("result_saved", False)
 ss.setdefault("admin_open", False)
 ss.setdefault("admin_ok", False)
 ss.setdefault("admin_del_target", "")
+ss.setdefault("seen_ids_hydrated", False)
 
 # (이전 URL 잠금 복원 — 계정 로그인과 무관, 있어도 무해)
 if not ss.locked_name:
@@ -404,6 +430,29 @@ def go_home():
     ss.current_row_idx = None
     ss.result_saved = False
 
+# ===== [추가] 진행 기록으로부터 이미 풀었던 문제 복원 =====
+def _load_seen_ids_for_user(user: str) -> set[str]:
+    if not user:
+        return set()
+    try:
+        df = pd.read_csv(PROGRESS_FILE)
+        if df.empty:
+            return set()
+        df["user_name"] = df["user_name"].astype(str).str.strip()
+        df["qid"] = df["qid"].astype(str)
+        mine = df[df["user_name"] == user.strip()]
+        return set(mine["qid"].tolist())
+    except Exception:
+        return set()
+
+# --- 문제 지문에서 '인라인 이미지'만 무력화 (예: ! → [이미지])
+_IMG_MD_PATTERN = re.compile(r'!\[[^\]]*\]\([^)]+\)')
+def _neutralize_inline_images_md(s: str) -> str:
+    try:
+        return _IMG_MD_PATTERN.sub("[이미지]", str(s))
+    except Exception:
+        return str(s)
+
 # ===== UI: 공통 헤더 =====
 auth_gate()
 
@@ -419,9 +468,16 @@ with st.sidebar:
         ss.pop("auth", None)
         ss.pop("locked_name", None)
         ss.user_name = ""
+        ss.seen_ids = set()
+        ss.seen_ids_hydrated = False
         st.rerun()
 
 st.divider()
+
+# [핵심] 로그인 직후 한 번, 진행 기록에서 seen_ids 복원
+if ss.locked_name and not ss.seen_ids_hydrated:
+    ss.seen_ids = _load_seen_ids_for_user(ss.locked_name)
+    ss.seen_ids_hydrated = True
 
 # ==========================
 # HOME
@@ -442,7 +498,7 @@ if ss.stage == "home":
             else:
                 ss.filters = {"level": level, "keyword": keyword}
                 df_filtered = filter_df(ss.df, level, keyword)
-                unseen = df_filtered[~df_filtered["id"].isin(ss.seen_ids)]
+                unseen = df_filtered[~df_filtered["id"].astype(str).isin(ss.seen_ids)]
                 if unseen.empty:
                     st.info("조건에 맞는 문제가 없습니다. 난이도/키워드를 조정하세요.")
                 else:
@@ -469,12 +525,16 @@ elif ss.stage == "quiz":
     enforce_locked_name()
     row = ss.df.loc[ss.current_row_idx]
     st.markdown(f"**[{row.get('topic','')}] {row.get('level','')} 난이도**")
-    st.markdown("> 문제:\n" + str(row.get("question","")))
+
+    # 문제 지문 내 인라인 이미지(![](...))만 치환해 깨짐 방지
+    question_txt = _neutralize_inline_images_md(row.get("question",""))
+    st.markdown("> 문제:\n" + question_txt)
 
     raw_img = str(row.get("image","")).strip()
     urls = _resolve_image_items(raw_img)
     if urls:
-        st.image(urls, use_container_width=True)
+        for u in urls:
+            st.image(u, use_container_width=True)
 
     ans_key = f"quiz_answer_{row['id']}"
     st.text_input("정답 입력", key=ans_key)
@@ -503,7 +563,7 @@ elif ss.stage == "quiz":
             return
 
         df_filtered = filter_df(ss.df, ss.filters.get("level","전체"), ss.filters.get("keyword",""))
-        unseen = df_filtered[~df_filtered["id"].isin(ss.seen_ids)]
+        unseen = df_filtered[~df_filtered["id"].astype(str).isin(ss.seen_ids)]
         if unseen.empty:
             ss.stage = "result"
         else:
@@ -605,7 +665,7 @@ st.markdown("""
 with st.container():
     st.markdown('<div id="admin-fab">', unsafe_allow_html=True)
     if st.button("관리자", key="btn_admin_fab", help="비밀번호 입력 후 랭킹 관리/시트 새로고침"):
-        ss.admin_open = not ss.admin_open
+        st.session_state.admin_open = not st.session_state.admin_open
     st.markdown('</div>', unsafe_allow_html=True)
 
 def _admin_panel_password():
@@ -616,12 +676,12 @@ def _admin_panel_password():
     with c1:
         if st.button("확인", key="admin_pwd_ok"):
             if pwd == ADMIN_PASSWORD:
-                ss.admin_ok = True; st.toast("인증되었습니다."); st.rerun()
+                st.session_state.admin_ok = True; st.toast("인증되었습니다."); st.rerun()
             else:
                 st.error("비밀번호가 올바르지 않습니다.")
     with c2:
         if st.button("닫기", key="admin_pwd_close"):
-            ss.admin_open = False; st.rerun()
+            st.session_state.admin_open = False; st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 def _admin_panel_menu():
@@ -633,7 +693,7 @@ def _admin_panel_menu():
     c1, c2 = st.columns(2)
     with c1:
         if st.button("기록 삭제", key="admin_del_exec"):
-            target = (ss.get("admin_del_target") or "").strip()
+            target = (st.session_state.get("admin_del_target") or "").strip()
             if target:
                 try:
                     df = pd.read_csv(RANKING_FILE)
@@ -661,7 +721,7 @@ def _admin_panel_menu():
     if st.button("시트 최신 반영(새로고침)", key="admin_sheet_reload"):
         try:
             st.cache_data.clear()
-            ss.df = load_sheet(_cache_buster=int(time.time()))
+            st.session_state.df = load_sheet(_cache_buster=int(time.time()))
             st.success("✅ 최신 시트를 반영했습니다.")
             st.rerun()
         except Exception as e:
@@ -669,10 +729,10 @@ def _admin_panel_menu():
 
     cc1, cc2, cc3 = st.columns(3)
     with cc1:
-        if st.button("닫기", key="admin_close"): ss.admin_open=False; st.rerun()
-    with c2:
-        if st.button("잠그기", key="admin_lock"): ss.admin_ok=False; st.rerun()
-    with c3:
+        if st.button("닫기", key="admin_close"): st.session_state.admin_open=False; st.rerun()
+    with cc2:
+        if st.button("잠그기", key="admin_lock"): st.session_state.admin_ok=False; st.rerun()
+    with cc3:
         if st.button("캐시 전체 초기화", key="admin_clear_cache"):
             try:
                 st.cache_data.clear(); st.success("캐시 초기화 완료.")
@@ -681,6 +741,6 @@ def _admin_panel_menu():
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-if ss.admin_open:
-    if ss.admin_ok: _admin_panel_menu()
+if st.session_state.admin_open:
+    if st.session_state.admin_ok: _admin_panel_menu()
     else: _admin_panel_password()
