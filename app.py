@@ -107,8 +107,6 @@ with st.sidebar:
                 ss.stage = "admin"; st.rerun()
 
 # ===== 홈 화면 =====
-ss.stage = "home"
-
 if ss.stage == "home":
     df = ss.df
     level = st.selectbox("난이도", LEVELS, index=LEVELS.index(ss.filters.get("level","전체")))
@@ -197,4 +195,5 @@ elif ss.stage == "admin":
 
     if st.button("🏠 홈으로 돌아가기"):
         ss.stage = "home"; st.rerun()
+
 
