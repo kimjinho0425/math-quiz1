@@ -80,9 +80,6 @@ st.title("🧮 수학 퀴즈")
 
 with st.sidebar:
     st.markdown("메뉴")
-    st.markdown("- 난이도와 키워드를 선택해 문제를 풀어보세요!")
-    st.markdown("- 복습하기에서 이미 푼 문제를 다시 선택해서 풀 수 있습니다.")
-    st.markdown("---")
 
     if "admin_unlocked" not in ss:
         ss.admin_unlocked = False
@@ -236,4 +233,5 @@ elif ss.stage=="admin":
 
     if st.button("🏠 홈으로 돌아가기"):
         ss.stage="home"; st.rerun()
+
 
