@@ -77,10 +77,9 @@ ss.setdefault("review_selected", None)  # ✅ 복습모드에서 선택된 문�
 
 # ===== 메인 =====
 st.title("🧮 수학 퀴즈")
-st.caption("복습모드에서 직접 문제를 골라 풀 수 있는 버전입니다.")
 
 with st.sidebar:
-    st.markdown("### 메뉴")
+    st.markdown("메뉴")
     st.markdown("- 난이도와 키워드를 선택해 문제를 풀어보세요!")
     st.markdown("- 복습하기에서 이미 푼 문제를 다시 선택해서 풀 수 있습니다.")
     st.markdown("---")
@@ -88,7 +87,7 @@ with st.sidebar:
     if "admin_unlocked" not in ss:
         ss.admin_unlocked = False
 
-    with st.expander("🔐 관리자"):
+    with st.expander("관리자"):
         if not ss.admin_unlocked:
             pw = st.text_input("관리자 비밀번호", type="password")
             if st.button("관리자 로그인"):
@@ -99,7 +98,7 @@ with st.sidebar:
                 else:
                     st.error("비밀번호가 올바르지 않습니다.")
         else:
-            st.success("관리자 모드 ON")
+            st.success("관리자 모드")
             if st.button("관리자 패널로 이동"):
                 ss.stage = "admin"; st.rerun()
 
@@ -237,3 +236,4 @@ elif ss.stage=="admin":
 
     if st.button("🏠 홈으로 돌아가기"):
         ss.stage="home"; st.rerun()
+
