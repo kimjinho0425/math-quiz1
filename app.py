@@ -1,4 +1,4 @@
-# app.py — Streamlit Math Quiz (회원가입/랭킹 제거 + 복습하기 기능만 추가)
+# app.py — Streamlit Math Quiz (복습모드 문제 선택 + 기록 제외)
 import time, hashlib, re, os
 from pathlib import Path
 import pandas as pd
@@ -72,16 +72,17 @@ ss.setdefault("filters",{"level":"전체","keyword":""})
 ss.setdefault("seen_ids",set())
 ss.setdefault("logs",[])
 ss.setdefault("result_saved",False)
-ss.setdefault("review_mode", False)   # ✅ 추가: 복습 모드 여부
+ss.setdefault("review_mode", False)
+ss.setdefault("review_selected", None)  # ✅ 복습모드에서 선택된 문제
 
 # ===== 메인 =====
 st.title("🧮 수학 퀴즈")
-st.caption("로그인과 랭킹 없이 바로 풀 수 있는 버전입니다.")
+st.caption("복습모드에서 직접 문제를 골라 풀 수 있는 버전입니다.")
 
 with st.sidebar:
     st.markdown("### 메뉴")
     st.markdown("- 난이도와 키워드를 선택해 문제를 풀어보세요!")
-    st.markdown("- 복습하기로 이미 푼 문제를 다시 볼 수 있습니다.")
+    st.markdown("- 복습하기에서 이미 푼 문제를 다시 선택해서 풀 수 있습니다.")
     st.markdown("---")
 
     if "admin_unlocked" not in ss:
@@ -120,20 +121,43 @@ if ss.stage=="home":
                 ss.current_row_idx=int(unseen.sample(1).index[0])
                 ss.stage="quiz"; st.rerun()
 
-    # ✅ 추가: 복습하기 버튼
     with c2:
         if st.button("복습하기",type="secondary"):
             if not ss.seen_ids:
                 st.warning("아직 푼 문제가 없습니다.")
             else:
                 ss.review_mode = True
-                df_seen = df[df["id"].isin(ss.seen_ids)]
-                ss.current_row_idx = int(df_seen.sample(1).index[0])
-                ss.stage = "quiz"; st.rerun()
+                ss.stage = "review_select"
+                st.rerun()
+
+# ===== 복습 문제 선택 화면 =====
+elif ss.stage == "review_select":
+    st.subheader("📘 복습할 문제 선택")
+    df = ss.df[ss.df["id"].isin(ss.seen_ids)]
+    if df.empty:
+        st.info("푼 문제가 없습니다."); 
+        if st.button("홈으로"): ss.stage="home"; st.rerun()
+    else:
+        # 문제 요약표
+        st.dataframe(df[["id","level","topic","question"]].reset_index(drop=True), use_container_width=True)
+        selected_id = st.text_input("풀고 싶은 문제 ID를 입력하세요:")
+        if st.button("해당 문제 풀기", type="primary"):
+            if selected_id.strip() in df["id"].values:
+                ss.review_selected = selected_id.strip()
+                ss.stage = "quiz"
+                st.rerun()
+            else:
+                st.warning("해당 ID의 문제가 없습니다.")
+        if st.button("홈으로 돌아가기"): ss.stage="home"; st.rerun()
 
 # ===== 퀴즈 =====
 elif ss.stage=="quiz":
-    row=ss.df.loc[ss.current_row_idx]
+    # ✅ 복습모드에서 선택된 문제가 있다면 그것을 우선 표시
+    if ss.review_mode and ss.review_selected:
+        row = ss.df[ss.df["id"] == ss.review_selected].iloc[0]
+    else:
+        row = ss.df.loc[ss.current_row_idx]
+
     st.markdown(f"**[{row.get('topic','')}] {row.get('level','')} 난이도**")
     st.markdown("> 문제:\n"+row.get("question",""))
 
@@ -144,25 +168,33 @@ elif ss.stage=="quiz":
     ans_key=f"ans_{row['id']}"
     st.text_input("정답 입력",key=ans_key)
     b1,b2,b3=st.columns(3)
+
     def commit(nextq=False):
         ua=normalize_ans(st.session_state.get(ans_key,""))
         gt=normalize_ans(row.get("answer",""))
-        status="correct" if ua and ua==gt else ("blank" if ua=="" else "wrong")
-        ss.logs.append({"qid":row["id"],"status":status,"level":row["level"]})
-        ss.seen_ids.add(row["id"])
+        correct = (ua and ua==gt)
 
-        # ✅ 복습모드에 따라 다음 문제 대상 달리하기
+        # ✅ 복습모드에서는 기록하지 않음
+        if not ss.review_mode:
+            status="correct" if correct else ("blank" if ua=="" else "wrong")
+            ss.logs.append({"qid":row["id"],"status":status,"level":row["level"]})
+            ss.seen_ids.add(row["id"])
+
         if ss.review_mode:
-            df_pool = ss.df[ss.df["id"].isin(ss.seen_ids)]
-        else:
-            df_pool = ss.df[~ss.df["id"].isin(ss.seen_ids)]
-        df_f = filter_df(df_pool, ss.filters.get("level","전체"), ss.filters.get("keyword",""))
-
-        if nextq and not df_f.empty:
-            ss.current_row_idx = int(df_f.sample(1).index[0])
+            st.info("복습 모드에서는 기록되지 않습니다.")
+            ss.stage = "home"
             st.rerun()
         else:
-            ss.stage="result"; st.rerun()
+            if nextq:
+                df_f=filter_df(ss.df,ss.filters.get("level","전체"),ss.filters.get("keyword",""))
+                unseen=df_f[~df_f["id"].isin(ss.seen_ids)]
+                if unseen.empty:
+                    ss.stage="result"
+                else:
+                    ss.current_row_idx=int(unseen.sample(1).index[0])
+                st.rerun()
+            else:
+                ss.stage="result"; st.rerun()
 
     with b1:
         if st.button("제출 후 다음 문제"): commit(True)
