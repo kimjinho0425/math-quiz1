@@ -1,4 +1,4 @@
-# app.py — Streamlit Math Quiz (복습모드 문제 선택 + 기록 제외 + 정답확인 화면 강화)
+# app.py — Streamlit Math Quiz (복습 + 정답확인 강화 + 키워드 숫자버전)
 import time, hashlib, re, os
 from pathlib import Path
 import pandas as pd
@@ -15,6 +15,7 @@ SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQv-m184X3IvYWV
 ADMIN_PASSWORD = "081224"
 LEVELS = ["전체", "하", "중", "상", "최상"]
 LEVEL_SCORE = {"하":1,"중":3,"상":5,"최상":7}
+KEYWORDS = ["전체", "공통수학1", "공통수학2", "수1", "수2"]  # ✅ 숫자 버전 키워드
 
 # ===== 시트 로드 =====
 @st.cache_data(show_spinner=False)
@@ -37,17 +38,15 @@ def normalize_ans(s:str)->str:
 def filter_df(df,level,kw):
     cond=pd.Series(True,index=df.index)
     if level in ("하","중","상","최상"): cond&=(df["level"]==level)
-    kw=(kw or "").strip().lower()
-    if kw:
+    if kw and kw!="전체":
         hay=(df["topic"]+" "+df["question"]+" "+df["answer"]).str.lower()
-        for t in kw.split(): cond&=hay.str.contains(re.escape(t),na=False)
+        cond&=hay.str.contains(kw.lower(),na=False)
     return df[cond].copy()
 
 def calc_weighted_score(df_log):
     if df_log.empty: return 0
     return int(df_log[df_log["status"]=="correct"]["level"].map(LEVEL_SCORE).fillna(0).sum())
 
-# ===== 로컬 이미지 로드 =====
 def get_image_paths(raw:str)->list[str]:
     if not raw: return []
     base=DATA_DIR/"images"/"quiz"
@@ -59,7 +58,6 @@ def get_image_paths(raw:str)->list[str]:
             found.append(str(local))
     return found
 
-# ===== 관리자 기능 =====
 def _refresh_sheet_globally():
     st.cache_data.clear()
     st.session_state.df = load_sheet(_cache_buster=int(time.time()))
@@ -68,7 +66,7 @@ def _refresh_sheet_globally():
 ss=st.session_state
 ss.setdefault("df",load_sheet())
 ss.setdefault("stage","home")
-ss.setdefault("filters",{"level":"전체","keyword":""})
+ss.setdefault("filters",{"level":"전체","keyword":"전체"})
 ss.setdefault("seen_ids",set())
 ss.setdefault("logs",[])
 ss.setdefault("result_saved",False)
@@ -104,9 +102,9 @@ with st.sidebar:
 if ss.stage=="home":
     df=ss.df
     level=st.selectbox("난이도",LEVELS,index=LEVELS.index(ss.filters.get("level","전체")))
-    keyword=st.text_input("키워드",value=ss.filters.get("keyword",""))
-    c1, c2 = st.columns(2)
+    keyword=st.selectbox("단원",KEYWORDS,index=KEYWORDS.index(ss.filters.get("keyword","전체")))  # ✅ 숫자 버전 선택
 
+    c1, c2 = st.columns(2)
     with c1:
         if st.button("문제 풀기",type="primary"):
             ss.filters={"level":level,"keyword":keyword}
@@ -148,7 +146,6 @@ elif ss.stage == "review_select":
 
 # ===== 퀴즈 =====
 elif ss.stage=="quiz":
-    # 복습모드에서 선택된 문제가 있다면 그것을 우선 표시
     if ss.review_mode and ss.review_selected:
         row = ss.df[ss.df["id"] == ss.review_selected].iloc[0]
     else:
@@ -180,30 +177,25 @@ elif ss.stage=="quiz":
                 "ua": ua,
                 "gt": gt,
                 "nextq": nextq,
-                "row_id": row["id"],
                 "review": ss.review_mode
             }
-            ss.stage = "feedback"
-            st.rerun()
+            ss.stage = "feedback"; st.rerun()
         else:
             ss.stage="result"; st.rerun()
 
     with b1:
-        if st.button("제출하기"): commit(show_feedback=True,nextq=True)
+        if st.button("제출 후 다음 문제"): commit(show_feedback=True,nextq=True)
     with b2:
         if st.button("제출 후 종료"): commit(show_feedback=True,nextq=False)
     with b3:
         if st.button("그만풀기"): ss.stage="home"; st.rerun()
 
-# ===== ✅ 정답 확인 단계 =====
+# ===== 정답 확인 =====
 elif ss.stage=="feedback":
     fb = ss.pending_feedback
-    if not fb:
-        ss.stage="home"; st.rerun()
+    if not fb: ss.stage="home"; st.rerun()
 
     st.markdown("### 📊 정답 확인")
-
-    # --- 크게 강조된 시각적 피드백 ---
     if fb["correct"]:
         st.markdown("<h1 style='color:limegreen; font-size:70px; text-align:center;'>✅ 정답!</h1>", unsafe_allow_html=True)
     else:
@@ -216,28 +208,22 @@ elif ss.stage=="feedback":
     st.markdown("---")
     c1, c2, c3 = st.columns(3)
 
-    # 복습 모드에서는 바로 홈으로
     if fb["review"]:
-        if c2.button("홈으로 돌아가기"): ss.stage="home"; st.rerun()
+        if c2.button("🏠 홈으로 돌아가기"): ss.stage="home"; st.rerun()
     else:
-        if c1.button("다음 문제로 넘어가기"):
-            df_f=filter_df(ss.df,ss.filters.get("level","전체"),ss.filters.get("keyword",""))
+        if c1.button("➡️ 다음 문제로 넘어가기"):
+            df_f=filter_df(ss.df,ss.filters.get("level","전체"),ss.filters.get("keyword","전체"))
             unseen=df_f[~df_f["id"].isin(ss.seen_ids)]
             if unseen.empty:
                 ss.stage="result"
             else:
                 ss.current_row_idx=int(unseen.sample(1).index[0])
                 ss.stage="quiz"
-            ss.pending_feedback=None
-            st.rerun()
-
-        if c2.button("결과 요약 보기"):
-            ss.pending_feedback=None
-            ss.stage="result"; st.rerun()
-
-        if c3.button("홈으로"):
-            ss.pending_feedback=None
-            ss.stage="home"; st.rerun()
+            ss.pending_feedback=None; st.rerun()
+        if c2.button("📘 결과 요약 보기"):
+            ss.pending_feedback=None; ss.stage="result"; st.rerun()
+        if c3.button("🛑 그만풀기"):
+            ss.pending_feedback=None; ss.stage="home"; st.rerun()
 
 # ===== 결과 =====
 elif ss.stage=="result":
