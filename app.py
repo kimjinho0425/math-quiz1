@@ -1,4 +1,4 @@
-# app.py — Streamlit Math Quiz (복습모드 문제 선택 + 기록 제외)
+# app.py — Streamlit Math Quiz (복습모드 문제 선택 + 기록 제외 + 정답 확인 단계 추가)
 import time, hashlib, re, os
 from pathlib import Path
 import pandas as pd
@@ -73,7 +73,8 @@ ss.setdefault("seen_ids",set())
 ss.setdefault("logs",[])
 ss.setdefault("result_saved",False)
 ss.setdefault("review_mode", False)
-ss.setdefault("review_selected", None)  # ✅ 복습모드에서 선택된 문제
+ss.setdefault("review_selected", None)
+ss.setdefault("pending_feedback", None)  # ✅ 추가: 정답 확인 정보 저장용
 
 # ===== 메인 =====
 st.title("길거리 수학 첼린지")
@@ -126,7 +127,7 @@ if ss.stage=="home":
                 ss.stage = "review_select"
                 st.rerun()
 
-# ===== 복습 문제 선택 화면 =====
+# ===== 복습 문제 선택 =====
 elif ss.stage == "review_select":
     st.subheader("📘 복습할 문제 선택")
     df = ss.df[ss.df["id"].isin(ss.seen_ids)]
@@ -134,7 +135,6 @@ elif ss.stage == "review_select":
         st.info("푼 문제가 없습니다."); 
         if st.button("홈으로"): ss.stage="home"; st.rerun()
     else:
-        # 문제 요약표
         st.dataframe(df[["id","level","topic","question"]].reset_index(drop=True), use_container_width=True)
         selected_id = st.text_input("풀고 싶은 문제 ID를 입력하세요:")
         if st.button("해당 문제 풀기", type="primary"):
@@ -156,7 +156,6 @@ elif ss.stage=="quiz":
 
     st.markdown(f"**[{row.get('topic','')}] {row.get('level','')} 난이도**")
     st.markdown("> 문제:\n"+row.get("question",""))
-
     imgs=get_image_paths(row.get("image",""))
     if imgs:
         for im in imgs: st.image(im,use_container_width=True)
@@ -165,7 +164,7 @@ elif ss.stage=="quiz":
     st.text_input("정답 입력",key=ans_key)
     b1,b2,b3=st.columns(3)
 
-    def commit(nextq=False):
+    def commit(show_feedback=False,nextq=False):
         ua=normalize_ans(st.session_state.get(ans_key,""))
         gt=normalize_ans(row.get("answer",""))
         correct = (ua and ua==gt)
@@ -176,28 +175,64 @@ elif ss.stage=="quiz":
             ss.logs.append({"qid":row["id"],"status":status,"level":row["level"]})
             ss.seen_ids.add(row["id"])
 
-        if ss.review_mode:
-            st.info("복습 모드에서는 기록되지 않습니다.")
-            ss.stage = "home"
+        # ✅ 정답 확인 단계 추가
+        if show_feedback:
+            ss.pending_feedback = {
+                "correct": correct,
+                "ua": ua,
+                "gt": gt,
+                "nextq": nextq,
+                "row_id": row["id"],
+                "review": ss.review_mode
+            }
+            ss.stage = "feedback"
             st.rerun()
         else:
-            if nextq:
+            ss.stage="result"; st.rerun()
+
+    with b1:
+        if st.button("제출 후 다음 문제"): commit(show_feedback=True,nextq=True)
+    with b2:
+        if st.button("제출 후 종료"): commit(show_feedback=True,nextq=False)
+    with b3:
+        if st.button("그만풀기"): ss.stage="home"; st.rerun()
+
+# ===== ✅ 정답 확인 단계 =====
+elif ss.stage=="feedback":
+    fb = ss.pending_feedback
+    if not fb:
+        ss.stage="home"; st.rerun()
+
+    st.subheader("📊 정답 확인")
+    if fb["correct"]:
+        st.success("✅ 정답입니다! 잘하셨어요!")
+    else:
+        if fb["ua"] == "":
+            st.warning("❗ 미기입 — 아무 답도 입력하지 않았습니다.")
+        else:
+            st.error(f"❌ 오답입니다. 정답은 `{fb['gt']}` 입니다.")
+
+    st.markdown("---")
+    if fb["review"]:
+        if st.button("홈으로 돌아가기"): ss.stage="home"; st.rerun()
+    else:
+        if fb["nextq"]:
+            st.info("다음 문제로 넘어가세요.")
+            if st.button("➡️ 다음 문제로 넘어가기"):
                 df_f=filter_df(ss.df,ss.filters.get("level","전체"),ss.filters.get("keyword",""))
                 unseen=df_f[~df_f["id"].isin(ss.seen_ids)]
                 if unseen.empty:
                     ss.stage="result"
                 else:
                     ss.current_row_idx=int(unseen.sample(1).index[0])
+                    ss.stage="quiz"
+                ss.pending_feedback=None
                 st.rerun()
-            else:
-                ss.stage="result"; st.rerun()
-
-    with b1:
-        if st.button("제출 후 다음 문제"): commit(True)
-    with b2:
-        if st.button("제출 후 종료"): commit(False)
-    with b3:
-        if st.button("그만풀기"): ss.stage="home"; st.rerun()
+        else:
+            if st.button("결과 요약 보기"):
+                ss.pending_feedback=None
+                ss.stage="result"
+                st.rerun()
 
 # ===== 결과 =====
 elif ss.stage=="result":
@@ -233,7 +268,3 @@ elif ss.stage=="admin":
 
     if st.button("🏠 홈으로 돌아가기"):
         ss.stage="home"; st.rerun()
-
-
-
-
