@@ -1,4 +1,0 @@
-﻿name,pwd_hash,salt,created_at,is_admin
-name,pwd_hash,salt,created_at,False
-임서윤,2e04361a20f75df1b88bb2be33af030fac7a8f27e7046ac4f11f1b518719ab26,2975ddca840c3d52,2025-10-13 09:26:51,False
-김진호,54f3d667b35f757be8de4db87a11a5706e70b072bb516fc84850ba28c74f7b3a,42b3e3f7b161244a,2025-11-04 00:18:59
