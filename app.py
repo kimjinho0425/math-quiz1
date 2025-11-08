@@ -3,9 +3,6 @@ import time, hashlib, re, os
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-
-st.set_page_config(page_title="수학 퀴즈", page_icon="🧮", layout="centered")
-
 # ===== 기본 경로 =====
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
@@ -233,5 +230,6 @@ elif ss.stage=="admin":
 
     if st.button("🏠 홈으로 돌아가기"):
         ss.stage="home"; st.rerun()
+
 
 
