@@ -75,7 +75,7 @@ ss.setdefault("review_selected", None)
 ss.setdefault("pending_feedback", None)
 
 # ===== 메인 =====
-st.title("길거리 수학 첼린지")
+st.title("길거리 수학 챌린지")
 
 with st.sidebar:
     st.markdown("메뉴")
@@ -259,3 +259,4 @@ elif ss.stage=="admin":
 
     if st.button("🏠 홈으로 돌아가기"):
         ss.stage="home"; st.rerun()
+
