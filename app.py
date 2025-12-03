@@ -47,16 +47,35 @@ def calc_weighted_score(df_log):
     if df_log.empty: return 0
     return int(df_log[df_log["status"]=="correct"]["level"].map(LEVEL_SCORE).fillna(0).sum())
 
+
+# ======================================================================
+# === 🔥 수정된 get_image_paths — PNG + JPG + JPEG 자동 인식 버전 ===
+# ======================================================================
 def get_image_paths(raw:str)->list[str]:
-    if not raw: return []
-    base=DATA_DIR/"images"/"quiz"
-    parts=[p.strip() for p in re.split(r"[;,]+",raw) if p.strip()]
-    found=[]
+    if not raw:
+        return []
+    base = DATA_DIR / "images" / "quiz"
+    exts = [".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"]  # 허용 확장자
+    parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
+    found = []
+
     for p in parts:
-        local=base/p
-        if local.exists():
-            found.append(str(local))
+        p_path = Path(p)
+        stem = p_path.stem       # 파일명(확장자 제거)
+        parent = p_path.parent   # 혹시 폴더가 포함된 경우 대비
+
+        # 뒤에 붙은 확장자는 무시하고 동일 이름의 png/jpg/jpeg 탐색
+        for ext in exts:
+            cand = parent / f"{stem}{ext}"
+            local = base / cand
+            if local.exists():
+                found.append(str(local))
+                break
+
     return found
+# ======================================================================
+# ======================================================================
+
 
 def _refresh_sheet_globally():
     st.cache_data.clear()
@@ -102,7 +121,7 @@ with st.sidebar:
 if ss.stage=="home":
     df=ss.df
     level=st.selectbox("난이도",LEVELS,index=LEVELS.index(ss.filters.get("level","전체")))
-    keyword=st.selectbox("단원",KEYWORDS,index=KEYWORDS.index(ss.filters.get("keyword","전체")))  # ✅ 숫자 버전 선택
+    keyword=st.selectbox("단원",KEYWORDS,index=KEYWORDS.index(ss.filters.get("keyword","전체")))  # 숫자 버전
 
     c1, c2 = st.columns(2)
     with c1:
