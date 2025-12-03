@@ -260,3 +260,4 @@ elif ss.stage=="admin":
     if st.button("🏠 홈으로 돌아가기"):
         ss.stage="home"; st.rerun()
 
+
