@@ -120,8 +120,10 @@ with st.sidebar:
 # ===== 홈 =====
 if ss.stage=="home":
     df=ss.df
-    level=st.selectbox("난이도",LEVELS,index=LEVELS.index(ss.filters.get("level","전체")))
-    keyword=st.selectbox("단원",KEYWORDS,index=KEYWORDS.index(ss.filters.get("keyword","전체")))  # 숫자 버전
+
+    # ✅ (수정) 홈 화면에서 키보드 입력(타이핑) 불가, 선택만 가능하게 radio 사용
+    level = st.radio("난이도", LEVELS, index=LEVELS.index(ss.filters.get("level","전체")))
+    keyword = st.radio("단원", KEYWORDS, index=KEYWORDS.index(ss.filters.get("keyword","전체")))  # 숫자 버전
 
     c1, c2 = st.columns(2)
     with c1:
@@ -278,5 +280,3 @@ elif ss.stage=="admin":
 
     if st.button("🏠 홈으로 돌아가기"):
         ss.stage="home"; st.rerun()
-
-
