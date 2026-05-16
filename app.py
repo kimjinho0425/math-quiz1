@@ -11,11 +11,10 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
 # ===== 시트 설정 =====
-SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQv-m184X3IvYWV0Ntur0gEQhs2DO9ryWJGYiLV30TFV_jB0iSatddQoPAfNFAUybXjoyEHEg4ld5ZY/pub?output=csv"
+SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/10VA6o6MRSeHz1CdkBMqUZqbB3Umo4BJaEsqTvqsgHvk/edit?usp=drivesdk"
 ADMIN_PASSWORD = "081224"
-LEVELS = ["전체", "하", "중", "상", "최상"]
-LEVEL_SCORE = {"하":1,"중":3,"상":5,"최상":7}
-KEYWORDS = ["전체", "공통수학1", "공통수학2", "수1", "수2"]  # ✅ 숫자 버전 키워드
+LEVELS = ["전체", "하", "중", "상"]
+KEYWORDS = ["전체", "공통수학", "대수", "확률과 통계", "미적분"]  # ✅ 숫자 버전 키워드
 
 # ===== 시트 로드 =====
 @st.cache_data(show_spinner=False)
@@ -37,7 +36,7 @@ def normalize_ans(s:str)->str:
 
 def filter_df(df,level,kw):
     cond=pd.Series(True,index=df.index)
-    if level in ("하","중","상","최상"): cond&=(df["level"]==level)
+    if level in ("하","중","상"): cond&=(df["level"]==level)
     if kw and kw!="전체":
         hay=(df["topic"]+" "+df["question"]+" "+df["answer"]).str.lower()
         cond&=hay.str.contains(kw.lower(),na=False)
