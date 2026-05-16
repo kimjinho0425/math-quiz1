@@ -17,7 +17,7 @@ LEVELS = ["전체", "하", "중", "상"]
 KEYWORDS = ["전체", "공통수학", "대수", "확률과 통계", "미적분"]  # ✅ 숫자 버전 키워드
 
 # ===== 시트 로드 =====
-@st.cache_data(show_spinner=False)
+st.cache_data(show_spinner=False)
 def load_sheet(_cache_buster:int=0)->pd.DataFrame:
     df=pd.read_csv(SHEET_CSV_URL,keep_default_na=False)
     df.columns=[c.strip().lower() for c in df.columns]
@@ -55,9 +55,6 @@ def get_image_paths(raw: str) -> list[str]:
         return []
 
     base = DATA_DIR / "image"
-    st.write("raw:", raw)
-    st.write("base exists:", base.exists())
-    st.write("base files:", list(base.glob("*")) if base.exists() else "폴더 없음")
     exts = [".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"]
     parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
     found = []
@@ -176,10 +173,13 @@ elif ss.stage=="quiz":
 
     st.markdown(f"**[{row.get('topic','')}] {row.get('level','')} 난이도**")
     st.markdown("> 문제:\n"+row.get("question",""))
-    imgs=get_image_paths(row.get("image",""))
-    if imgs:
-        for im in imgs: st.image(im,use_container_width=True)
+    imgs = get_image_paths(row.get("image", ""))
 
+st.write("imgs:", imgs)
+
+if imgs:
+    for im in imgs:
+        st.image(str(im), width=700)
     ans_key=f"ans_{row['id']}"
     st.text_input("정답 입력",key=ans_key)
     b1,b2,b3=st.columns(3)
