@@ -63,30 +63,31 @@ def calc_weighted_score(df_log):
 
 # ===== 이미지 경로 찾기 =====
 def get_image_paths(raw: str) -> list[str]:
+    import unicodedata
+
     if not raw:
         return []
 
     base = DATA_DIR / "image"
-
-    st.write("raw:", raw)
-    st.write("base exists:", base.exists())
-    st.write("base files:", list(base.glob("*")) if base.exists() else "폴더 없음")
-
     exts = [".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"]
     parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
     found = []
 
+    files = list(base.glob("*")) if base.exists() else []
+
     for p in parts:
-        p_path = Path(p)
-        stem = p_path.stem
-        parent = p_path.parent
+        p_norm = unicodedata.normalize("NFC", Path(p).name)
+        stem = Path(p_norm).stem
 
-        for ext in exts:
-            cand = parent / f"{stem}{ext}"
-            local = base / cand
+        for f in files:
+            f_norm = unicodedata.normalize("NFC", f.name)
 
-            if local.exists():
-                found.append(str(local))
+            if f_norm == p_norm:
+                found.append(str(f))
+                break
+
+            if Path(f_norm).stem == stem and Path(f_norm).suffix in exts:
+                found.append(str(f))
                 break
 
     return found
