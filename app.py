@@ -54,7 +54,7 @@ def get_image_paths(raw: str) -> list[str]:
     if not raw:
         return []
 
-    base = DATA_DIR / "images"
+    base = DATA_DIR / "image"
     exts = [".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"]
     parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
     found = []
