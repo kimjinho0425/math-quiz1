@@ -50,20 +50,20 @@ def calc_weighted_score(df_log):
 # ======================================================================
 # === 🔥 수정된 get_image_paths — PNG + JPG + JPEG 자동 인식 버전 ===
 # ======================================================================
-def get_image_paths(raw:str)->list[str]:
+def get_image_paths(raw: str) -> list[str]:
     if not raw:
         return []
-    base = DATA_DIR / "images" / "quiz"
-    exts = [".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"]  # 허용 확장자
+
+    base = DATA_DIR / "images"
+    exts = [".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"]
     parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
     found = []
 
     for p in parts:
         p_path = Path(p)
-        stem = p_path.stem       # 파일명(확장자 제거)
-        parent = p_path.parent   # 혹시 폴더가 포함된 경우 대비
+        stem = p_path.stem
+        parent = p_path.parent
 
-        # 뒤에 붙은 확장자는 무시하고 동일 이름의 png/jpg/jpeg 탐색
         for ext in exts:
             cand = parent / f"{stem}{ext}"
             local = base / cand
