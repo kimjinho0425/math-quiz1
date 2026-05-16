@@ -55,6 +55,9 @@ def get_image_paths(raw: str) -> list[str]:
         return []
 
     base = DATA_DIR / "image"
+    st.write("raw:", raw)
+    st.write("base exists:", base.exists())
+    st.write("base files:", list(base.glob("*")) if base.exists() else "폴더 없음")
     exts = [".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"]
     parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
     found = []
