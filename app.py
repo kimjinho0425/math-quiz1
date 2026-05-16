@@ -11,7 +11,7 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
 # ===== 시트 설정 =====
-SHEET_CSV_URL = "SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/10VA6o6MRSeHz1CdkBMqUZqbB3Umo4BJaEsqTvqsgHvk/export?format=csv""
+SHEET_CSV_URL ="https://docs.google.com/spreadsheets/d/10VA6o6MRSeHz1CdkBMqUZqbB3Umo4BJaEsqTvqsgHvk/export?format=csv"
 ADMIN_PASSWORD = "081224"
 LEVELS = ["전체", "하", "중", "상"]
 KEYWORDS = ["전체", "공통수학", "대수", "확률과 통계", "미적분"]  # ✅ 숫자 버전 키워드
