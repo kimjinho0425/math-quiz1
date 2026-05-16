@@ -1,5 +1,5 @@
 # app.py — Streamlit Math Quiz
-import time, hashlib, re
+import time, hashlib, re, unicodedata
 from pathlib import Path
 import pandas as pd
 import streamlit as st
@@ -63,8 +63,6 @@ def calc_weighted_score(df_log):
 
 # ===== 이미지 경로 찾기 =====
 def get_image_paths(raw: str) -> list[str]:
-    import unicodedata
-
     if not raw:
         return []
 
@@ -205,8 +203,6 @@ elif ss.stage == "quiz":
     st.markdown("> 문제: " + row.get("question", ""))
 
     imgs = get_image_paths(row.get("image", ""))
-
-    st.write("imgs:", imgs)
 
     if imgs:
         for im in imgs:
